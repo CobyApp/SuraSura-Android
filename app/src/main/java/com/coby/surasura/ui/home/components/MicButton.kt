@@ -21,9 +21,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
@@ -78,18 +78,12 @@ fun MicButton(
             )
         }
 
-        // 내부 원형 버튼 (62dp — iOS: 62x62pt inner circle)
+        // Inner circle: no Compose shadow — it polygon-approximates and shows an octagonal halo
+        // inside the circle (especially on the top panel’s translucent white fill).
         Box(
             modifier = Modifier
                 .size(62.dp)
-                .shadow(
-                    elevation = if (isListening) 8.dp else 6.dp,
-                    shape = CircleShape,
-                    ambientColor = if (isListening) Color.Red.copy(alpha = 0.4f)
-                                   else Color.Black.copy(alpha = 0.4f),
-                    spotColor = if (isListening) Color.Red.copy(alpha = 0.4f)
-                                else Color.Black.copy(alpha = 0.4f)
-                )
+                .clip(CircleShape)
                 .background(
                     color = if (isListening) Color.Red else bgColor,
                     shape = CircleShape

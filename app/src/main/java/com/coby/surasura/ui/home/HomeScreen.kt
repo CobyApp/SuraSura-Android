@@ -2,6 +2,7 @@ package com.coby.surasura.ui.home
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -41,7 +43,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,8 +62,19 @@ import com.coby.surasura.ui.home.components.MicButton
 import com.coby.surasura.ui.UiCopy
 import com.coby.surasura.ui.theme.AccentBlue
 
+/** Same metrics for top & bottom panel body/hint (avoids theme merge + font padding skew). */
+private fun panelContentTextStyle(color: Color): TextStyle = TextStyle(
+    color = color,
+    fontSize = 22.sp,
+    lineHeight = 30.sp,
+    fontWeight = FontWeight.Normal,
+    letterSpacing = 0.sp,
+    platformStyle = PlatformTextStyle(includeFontPadding = false)
+)
+
 /**
- * 홈 화면 — iOS HomeView.swift와 완전히 동일한 레이아웃
+ * 홈 화면 — iOS HomeView.swift와 동일한 역할
+ * Portrait: 상·하 반분 | Landscape: 좌(파랑)·우(밝은) 반분
  *
  * 권한 처리:
  *  - 이미 RECORD_AUDIO 권한 있음 → 바로 시작
@@ -131,56 +146,92 @@ fun HomeScreen(viewModel: HomeViewModel) {
     else
         state.speechRecognition.recognizedText
 
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
     Box(modifier = Modifier.fillMaxSize()) {
 
-        Column(modifier = Modifier.fillMaxSize()) {
-
-            // ──────────────────────────────────────────────────────────────
-            // 상단 패널 (파란 배경, 화면 절반)
-            // activeMic==TOP: 인식 텍스트 | activeMic==BOTTOM: 번역 결과
-            // ──────────────────────────────────────────────────────────────
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .background(AccentBlue)
-                    .graphicsLayer(rotationZ = faceToFaceRotation)
-            ) {
-                TranslationPanel(
-                    displayText = topDisplayText,
-                    isTranslating = state.translation.isTranslating && state.activeMic == ActiveMic.BOTTOM,
-                    language = state.topLanguage,
-                    // 상단 마이크: activeMic==TOP이고 세션 활성일 때만 빨간 stop
-                    isSessionActive = state.activeMic == ActiveMic.TOP && state.isSessionActive,
-                    onLanguageTap = { viewModel.showTopPicker() },
-                    onMicTap = { checkPermissionAndStartTop() },
-                    onTap = { if (topDisplayText.isNotBlank()) viewModel.expandTopPanel() }
-                )
+        if (isLandscape) {
+            // Landscape: left = blue (translation) panel, right = recognition panel
+            Row(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(AccentBlue)
+                        .graphicsLayer(rotationZ = faceToFaceRotation)
+                ) {
+                    TranslationPanel(
+                        displayText = topDisplayText,
+                        isTranslating = state.translation.isTranslating && state.activeMic == ActiveMic.BOTTOM,
+                        language = state.topLanguage,
+                        isSessionActive = state.activeMic == ActiveMic.TOP && state.isSessionActive,
+                        onLanguageTap = { viewModel.showTopPicker() },
+                        onMicTap = { checkPermissionAndStartTop() },
+                        onTap = { if (topDisplayText.isNotBlank()) viewModel.expandTopPanel() },
+                        navigationBarsInsetOnBottomChrome = true,
+                        bottomBarMicOnStart = true
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(MaterialTheme.colorScheme.background)
+                ) {
+                    RecognitionPanel(
+                        displayText = bottomDisplayText,
+                        isListening = state.speechRecognition.isListening && state.activeMic == ActiveMic.BOTTOM,
+                        language = state.bottomLanguage,
+                        isSessionActive = state.activeMic == ActiveMic.BOTTOM && state.isSessionActive,
+                        isFaceToFace = state.isFaceToFaceMode,
+                        onFaceToFaceTap = { viewModel.toggleFaceToFaceMode() },
+                        onSwapTap = { viewModel.swapLanguages() },
+                        onLanguageTap = { viewModel.showBottomPicker() },
+                        onMicTap = { checkPermissionAndStartBottom() },
+                        onTap = { if (bottomDisplayText.isNotBlank()) viewModel.expandBottomPanel() },
+                        statusBarsInsetOnScrollContent = true
+                    )
+                }
             }
-
-            // ──────────────────────────────────────────────────────────────
-            // 하단 패널 (시스템 배경, 화면 절반)
-            // activeMic==TOP: 번역 결과 | activeMic==BOTTOM: 인식 텍스트
-            // ──────────────────────────────────────────────────────────────
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .background(MaterialTheme.colorScheme.background)
-            ) {
-                RecognitionPanel(
-                    displayText = bottomDisplayText,
-                    isListening = state.speechRecognition.isListening && state.activeMic == ActiveMic.BOTTOM,
-                    language = state.bottomLanguage,
-                    // 하단 마이크: activeMic==BOTTOM이고 세션 활성일 때만 빨간 stop
-                    isSessionActive = state.activeMic == ActiveMic.BOTTOM && state.isSessionActive,
-                    isFaceToFace = state.isFaceToFaceMode,
-                    onFaceToFaceTap = { viewModel.toggleFaceToFaceMode() },
-                    onSwapTap = { viewModel.swapLanguages() },
-                    onLanguageTap = { viewModel.showBottomPicker() },
-                    onMicTap = { checkPermissionAndStartBottom() },
-                    onTap = { if (bottomDisplayText.isNotBlank()) viewModel.expandBottomPanel() }
-                )
+        } else {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .background(AccentBlue)
+                        .graphicsLayer(rotationZ = faceToFaceRotation)
+                ) {
+                    TranslationPanel(
+                        displayText = topDisplayText,
+                        isTranslating = state.translation.isTranslating && state.activeMic == ActiveMic.BOTTOM,
+                        language = state.topLanguage,
+                        isSessionActive = state.activeMic == ActiveMic.TOP && state.isSessionActive,
+                        onLanguageTap = { viewModel.showTopPicker() },
+                        onMicTap = { checkPermissionAndStartTop() },
+                        onTap = { if (topDisplayText.isNotBlank()) viewModel.expandTopPanel() }
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .background(MaterialTheme.colorScheme.background)
+                ) {
+                    RecognitionPanel(
+                        displayText = bottomDisplayText,
+                        isListening = state.speechRecognition.isListening && state.activeMic == ActiveMic.BOTTOM,
+                        language = state.bottomLanguage,
+                        isSessionActive = state.activeMic == ActiveMic.BOTTOM && state.isSessionActive,
+                        isFaceToFace = state.isFaceToFaceMode,
+                        onFaceToFaceTap = { viewModel.toggleFaceToFaceMode() },
+                        onSwapTap = { viewModel.swapLanguages() },
+                        onLanguageTap = { viewModel.showBottomPicker() },
+                        onMicTap = { checkPermissionAndStartBottom() },
+                        onTap = { if (bottomDisplayText.isNotBlank()) viewModel.expandBottomPanel() }
+                    )
+                }
             }
         }
 
@@ -263,7 +314,11 @@ private fun TranslationPanel(
     isSessionActive: Boolean,
     onLanguageTap: () -> Unit,
     onMicTap: () -> Unit,
-    onTap: () -> Unit
+    onTap: () -> Unit,
+    /** Landscape: bottom chrome sits on screen edge — match right panel nav insets. */
+    navigationBarsInsetOnBottomChrome: Boolean = false,
+    /** Landscape left panel: mic on the left, language chip directly to its right. */
+    bottomBarMicOnStart: Boolean = false
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
@@ -281,16 +336,12 @@ private fun TranslationPanel(
             if (displayText.isBlank()) {
                 Text(
                     text = if (isTranslating) "…" else UiCopy.PANEL_MIC_HINT,
-                    style = TextStyle(
-                        fontSize = 22.sp,
-                        lineHeight = 30.sp,
-                        color = Color.White.copy(alpha = 0.45f)
-                    )
+                    style = panelContentTextStyle(Color.White.copy(alpha = 0.45f))
                 )
             } else {
                 Text(
                     text = displayText,
-                    style = TextStyle(fontSize = 22.sp, lineHeight = 30.sp, color = Color.White)
+                    style = panelContentTextStyle(Color.White)
                 )
             }
         }
@@ -304,16 +355,42 @@ private fun TranslationPanel(
                         colors = listOf(AccentBlue.copy(alpha = 0f), AccentBlue, AccentBlue)
                     )
                 )
-                .padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 24.dp)
+                .padding(
+                    start = 24.dp,
+                    end = 24.dp,
+                    top = 20.dp,
+                    bottom = if (navigationBarsInsetOnBottomChrome) 16.dp else 24.dp
+                )
+                .then(
+                    if (navigationBarsInsetOnBottomChrome) {
+                        Modifier.navigationBarsPadding()
+                    } else {
+                        Modifier
+                    }
+                )
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Spacer(modifier = Modifier.weight(1f))
-                LanguageButton(language = language, textColor = Color.White, onClick = onLanguageTap)
-                MicButton(isListening = isSessionActive, bgColor = Color.White.copy(alpha = 0.3f), onClick = onMicTap)
+                if (bottomBarMicOnStart) {
+                    // Mic on the left, language chip immediately to its right (landscape left panel)
+                    MicButton(
+                        isListening = isSessionActive,
+                        bgColor = Color.White.copy(alpha = 0.3f),
+                        onClick = onMicTap
+                    )
+                    LanguageButton(language = language, textColor = Color.White, onClick = onLanguageTap)
+                } else {
+                    Spacer(modifier = Modifier.weight(1f))
+                    LanguageButton(language = language, textColor = Color.White, onClick = onLanguageTap)
+                    MicButton(
+                        isListening = isSessionActive,
+                        bgColor = Color.White.copy(alpha = 0.3f),
+                        onClick = onMicTap
+                    )
+                }
             }
         }
     }
@@ -333,33 +410,40 @@ private fun RecognitionPanel(
     onSwapTap: () -> Unit,
     onLanguageTap: () -> Unit,
     onMicTap: () -> Unit,
-    onTap: () -> Unit
+    onTap: () -> Unit,
+    /** Landscape: panel spans full window height — match left panel status-bar inset on body text. */
+    statusBarsInsetOnScrollContent: Boolean = false
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .then(
+                    if (statusBarsInsetOnScrollContent) {
+                        Modifier.statusBarsPadding()
+                    } else {
+                        Modifier
+                    }
+                )
                 .verticalScroll(rememberScrollState())
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                     onClick = onTap
                 )
-                .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 120.dp)
+                .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 130.dp)
         ) {
             if (displayText.isBlank()) {
                 Text(
                     text = if (isListening) UiCopy.PANEL_LISTENING else UiCopy.PANEL_MIC_HINT,
-                    style = TextStyle(
-                        fontSize = 20.sp,
-                        lineHeight = 27.sp,
-                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)
+                    style = panelContentTextStyle(
+                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)
                     )
                 )
             } else {
                 Text(
                     text = displayText,
-                    style = TextStyle(fontSize = 20.sp, lineHeight = 27.sp, color = MaterialTheme.colorScheme.onBackground)
+                    style = panelContentTextStyle(MaterialTheme.colorScheme.onBackground)
                 )
             }
         }
@@ -398,7 +482,7 @@ private fun LanguageButton(language: SupportedLanguage, textColor: Color, onClic
         contentAlignment = Alignment.CenterEnd
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(text = language.flag, fontSize = 20.sp)
+            Text(text = language.flag, fontSize = 22.sp)
             Text(text = language.shortName, style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = textColor), maxLines = 1, overflow = TextOverflow.Ellipsis)
             Icon(imageVector = Icons.Filled.KeyboardArrowDown, contentDescription = null, tint = textColor.copy(alpha = 0.5f), modifier = Modifier.size(16.dp))
         }
