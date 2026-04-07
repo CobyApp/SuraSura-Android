@@ -12,6 +12,17 @@ val localProperties = Properties().also { props ->
     if (file.exists()) props.load(file.inputStream())
 }
 
+// Speech 4.x + Translate/TTS 2.x pull different protobuf minors → runtime LinkageError / crash on first RPC.
+configurations.configureEach {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "com.google.protobuf") {
+            when (requested.name) {
+                "protobuf-java", "protobuf-java-util" -> useVersion("3.25.3")
+            }
+        }
+    }
+}
+
 android {
     namespace = "com.coby.surasura"
     compileSdk = 35
@@ -31,12 +42,21 @@ android {
             ?: System.getenv("GOOGLE_CLOUD_API_KEY")
             ?: ""
         buildConfigField("String", "GOOGLE_CLOUD_API_KEY", "\"$googleCloudApiKey\"")
+
+        // Optional: reserved for future GCP features (Translation v2 REST uses API key only).
+        val googleCloudProjectId = localProperties.getProperty("GOOGLE_CLOUD_PROJECT_ID")
+            ?: project.findProperty("GOOGLE_CLOUD_PROJECT_ID") as String?
+            ?: System.getenv("GOOGLE_CLOUD_PROJECT_ID")
+            ?: ""
+        buildConfigField("String", "GOOGLE_CLOUD_PROJECT_ID", "\"$googleCloudProjectId\"")
     }
 
     buildTypes {
         debug {
             isDebuggable = true
-            applicationIdSuffix = ".debug"
+            // No applicationIdSuffix: GCP "Android apps" API key restrictions match
+            // applicationId only (com.coby.surasura). A ".debug" suffix breaks keys that
+            // list the release package + SHA-1 only — common cause of PERMISSION_DENIED.
         }
         release {
             isMinifyEnabled = true
@@ -56,6 +76,17 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    // gRPC / protobuf JARs ship duplicate META-INF entries → mergeDebugJavaResource fails without this.
+    packaging {
+        resources {
+            pickFirsts += listOf(
+                "META-INF/INDEX.LIST",
+                "META-INF/DEPENDENCIES",
+                "META-INF/io.netty.versions.properties",
+            )
+        }
     }
 }
 
@@ -78,15 +109,18 @@ dependencies {
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
 
-    // Network
-    implementation(libs.retrofit)
-    implementation(libs.retrofit.converter.gson)
-    implementation(libs.okhttp)
-    implementation(libs.okhttp.logging)
-    implementation(libs.gson)
-
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
+
+    // Google Cloud gRPC (Speech v1). Translation v2 + TTS v1 use REST + API key.
+    implementation(platform(libs.grpc.bom))
+    implementation(libs.grpc.okhttp)
+    implementation(libs.grpc.stub)
+    implementation(libs.grpc.protobuf)
+    implementation(libs.grpc.google.cloud.speech.v1)
+    implementation(libs.javax.annotation.api)
+    // Pin protobuf on compile classpath (matches resolutionStrategy above).
+    implementation("com.google.protobuf:protobuf-java:3.25.3")
 
     debugImplementation(libs.androidx.ui.tooling)
 }

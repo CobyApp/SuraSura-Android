@@ -5,6 +5,8 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -166,6 +168,9 @@ fun HomeScreen(viewModel: HomeViewModel) {
                         isTranslating = state.translation.isTranslating && state.activeMic == ActiveMic.BOTTOM,
                         language = state.topLanguage,
                         isSessionActive = state.activeMic == ActiveMic.TOP && state.isSessionActive,
+                        isSttListening = state.speechRecognition.isListening && state.activeMic == ActiveMic.TOP,
+                        sttError = if (state.activeMic == ActiveMic.TOP) state.speechRecognition.errorMessage else null,
+                        translationError = if (state.activeMic == ActiveMic.BOTTOM) state.translation.errorMessage else null,
                         onLanguageTap = { viewModel.showTopPicker() },
                         onMicTap = { checkPermissionAndStartTop() },
                         onTap = { if (topDisplayText.isNotBlank()) viewModel.expandTopPanel() },
@@ -181,16 +186,20 @@ fun HomeScreen(viewModel: HomeViewModel) {
                 ) {
                     RecognitionPanel(
                         displayText = bottomDisplayText,
+                        isTranslating = state.translation.isTranslating && state.activeMic == ActiveMic.TOP,
                         isListening = state.speechRecognition.isListening && state.activeMic == ActiveMic.BOTTOM,
                         language = state.bottomLanguage,
                         isSessionActive = state.activeMic == ActiveMic.BOTTOM && state.isSessionActive,
+                        sttError = if (state.activeMic == ActiveMic.BOTTOM) state.speechRecognition.errorMessage else null,
+                        translationError = if (state.activeMic == ActiveMic.TOP) state.translation.errorMessage else null,
                         isFaceToFace = state.isFaceToFaceMode,
                         onFaceToFaceTap = { viewModel.toggleFaceToFaceMode() },
                         onSwapTap = { viewModel.swapLanguages() },
                         onLanguageTap = { viewModel.showBottomPicker() },
                         onMicTap = { checkPermissionAndStartBottom() },
                         onTap = { if (bottomDisplayText.isNotBlank()) viewModel.expandBottomPanel() },
-                        statusBarsInsetOnScrollContent = true
+                        statusBarsInsetOnScrollContent = true,
+                        showFaceToFaceButton = false
                     )
                 }
             }
@@ -208,6 +217,9 @@ fun HomeScreen(viewModel: HomeViewModel) {
                         isTranslating = state.translation.isTranslating && state.activeMic == ActiveMic.BOTTOM,
                         language = state.topLanguage,
                         isSessionActive = state.activeMic == ActiveMic.TOP && state.isSessionActive,
+                        isSttListening = state.speechRecognition.isListening && state.activeMic == ActiveMic.TOP,
+                        sttError = if (state.activeMic == ActiveMic.TOP) state.speechRecognition.errorMessage else null,
+                        translationError = if (state.activeMic == ActiveMic.BOTTOM) state.translation.errorMessage else null,
                         onLanguageTap = { viewModel.showTopPicker() },
                         onMicTap = { checkPermissionAndStartTop() },
                         onTap = { if (topDisplayText.isNotBlank()) viewModel.expandTopPanel() }
@@ -221,9 +233,12 @@ fun HomeScreen(viewModel: HomeViewModel) {
                 ) {
                     RecognitionPanel(
                         displayText = bottomDisplayText,
+                        isTranslating = state.translation.isTranslating && state.activeMic == ActiveMic.TOP,
                         isListening = state.speechRecognition.isListening && state.activeMic == ActiveMic.BOTTOM,
                         language = state.bottomLanguage,
                         isSessionActive = state.activeMic == ActiveMic.BOTTOM && state.isSessionActive,
+                        sttError = if (state.activeMic == ActiveMic.BOTTOM) state.speechRecognition.errorMessage else null,
+                        translationError = if (state.activeMic == ActiveMic.TOP) state.translation.errorMessage else null,
                         isFaceToFace = state.isFaceToFaceMode,
                         onFaceToFaceTap = { viewModel.toggleFaceToFaceMode() },
                         onSwapTap = { viewModel.swapLanguages() },
@@ -263,20 +278,24 @@ fun HomeScreen(viewModel: HomeViewModel) {
         if (state.isTopExpanded) {
             Dialog(
                 onDismissRequest = { viewModel.collapseTopPanel() },
-                properties = DialogProperties(usePlatformDefaultWidth = false)
-            ) {
-                val topLang = state.topLanguage
-                ExpandedTextView(
-                    text = topDisplayText,
-                    language = topLang,
-                    backgroundColor = AccentBlue,
-                    textColor = Color.White,
-                    isFaceToFace = state.isFaceToFaceMode,
-                    isSpeaking = state.translation.isSpeaking,
-                    onSpeak = { viewModel.speakExpanded(topDisplayText, topLang) },
-                    onStopSpeak = { viewModel.stopSpeaking() },
-                    onDismiss = { viewModel.collapseTopPanel() }
+                properties = DialogProperties(
+                    usePlatformDefaultWidth = false,
+                    decorFitsSystemWindows = false
                 )
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    val topLang = state.topLanguage
+                    ExpandedTextView(
+                        text = topDisplayText,
+                        backgroundColor = AccentBlue,
+                        textColor = Color.White,
+                        isFaceToFace = state.isFaceToFaceMode,
+                        isSpeaking = state.translation.isSpeaking,
+                        onSpeak = { viewModel.speakExpanded(topDisplayText, topLang) },
+                        onStopSpeak = { viewModel.stopSpeaking() },
+                        onDismiss = { viewModel.collapseTopPanel() }
+                    )
+                }
             }
         }
 
@@ -284,20 +303,24 @@ fun HomeScreen(viewModel: HomeViewModel) {
         if (state.isBottomExpanded) {
             Dialog(
                 onDismissRequest = { viewModel.collapseBottomPanel() },
-                properties = DialogProperties(usePlatformDefaultWidth = false)
-            ) {
-                val bottomLang = state.bottomLanguage
-                ExpandedTextView(
-                    text = bottomDisplayText,
-                    language = bottomLang,
-                    backgroundColor = MaterialTheme.colorScheme.background,
-                    textColor = MaterialTheme.colorScheme.onBackground,
-                    isFaceToFace = false,
-                    isSpeaking = state.translation.isSpeaking,
-                    onSpeak = { viewModel.speakExpanded(bottomDisplayText, bottomLang) },
-                    onStopSpeak = { viewModel.stopSpeaking() },
-                    onDismiss = { viewModel.collapseBottomPanel() }
+                properties = DialogProperties(
+                    usePlatformDefaultWidth = false,
+                    decorFitsSystemWindows = false
                 )
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    val bottomLang = state.bottomLanguage
+                    ExpandedTextView(
+                        text = bottomDisplayText,
+                        backgroundColor = MaterialTheme.colorScheme.background,
+                        textColor = MaterialTheme.colorScheme.onBackground,
+                        isFaceToFace = false,
+                        isSpeaking = state.translation.isSpeaking,
+                        onSpeak = { viewModel.speakExpanded(bottomDisplayText, bottomLang) },
+                        onStopSpeak = { viewModel.stopSpeaking() },
+                        onDismiss = { viewModel.collapseBottomPanel() }
+                    )
+                }
             }
         }
     }
@@ -312,6 +335,12 @@ private fun TranslationPanel(
     isTranslating: Boolean,
     language: SupportedLanguage,
     isSessionActive: Boolean,
+    /** True when top mic session is actively capturing audio (STT pipeline running). */
+    isSttListening: Boolean = false,
+    /** Shown when Streaming STT failed for the top mic session. */
+    sttError: String? = null,
+    /** Shown when this panel displays translation and the Translate API failed. */
+    translationError: String? = null,
     onLanguageTap: () -> Unit,
     onMicTap: () -> Unit,
     onTap: () -> Unit,
@@ -333,16 +362,51 @@ private fun TranslationPanel(
                 )
                 .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 130.dp)
         ) {
-            if (displayText.isBlank()) {
-                Text(
-                    text = if (isTranslating) "…" else UiCopy.PANEL_MIC_HINT,
-                    style = panelContentTextStyle(Color.White.copy(alpha = 0.45f))
-                )
-            } else {
-                Text(
-                    text = displayText,
-                    style = panelContentTextStyle(Color.White)
-                )
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (!sttError.isNullOrBlank()) {
+                    Text(
+                        text = sttError,
+                        style = panelContentTextStyle(Color(0xFFFFB4AB)).copy(
+                            fontSize = 16.sp,
+                            lineHeight = 22.sp
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                    )
+                }
+                if (!translationError.isNullOrBlank()) {
+                    Text(
+                        text = translationError,
+                        style = panelContentTextStyle(Color(0xFFFFCC80)).copy(
+                            fontSize = 16.sp,
+                            lineHeight = 22.sp
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                    )
+                }
+                Box(
+                    modifier = Modifier.animateContentSize(
+                        animationSpec = tween(220, easing = FastOutSlowInEasing)
+                    )
+                ) {
+                    if (displayText.isBlank()) {
+                        Text(
+                            text = if (isTranslating) "…" else UiCopy.PANEL_MIC_HINT,
+                            style = panelContentTextStyle(Color.White.copy(alpha = 0.45f)),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        val bodyAlpha = if (isTranslating) 0.72f else 1f
+                        Text(
+                            text = displayText,
+                            style = panelContentTextStyle(Color.White.copy(alpha = bodyAlpha)),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
             }
         }
 
@@ -377,7 +441,7 @@ private fun TranslationPanel(
                 if (bottomBarMicOnStart) {
                     // Mic on the left, language chip immediately to its right (landscape left panel)
                     MicButton(
-                        isListening = isSessionActive,
+                        isListening = isSessionActive && isSttListening,
                         bgColor = Color.White.copy(alpha = 0.3f),
                         onClick = onMicTap
                     )
@@ -386,7 +450,7 @@ private fun TranslationPanel(
                     Spacer(modifier = Modifier.weight(1f))
                     LanguageButton(language = language, textColor = Color.White, onClick = onLanguageTap)
                     MicButton(
-                        isListening = isSessionActive,
+                        isListening = isSessionActive && isSttListening,
                         bgColor = Color.White.copy(alpha = 0.3f),
                         onClick = onMicTap
                     )
@@ -402,9 +466,15 @@ private fun TranslationPanel(
 @Composable
 private fun RecognitionPanel(
     displayText: String,
+    /** True when this panel shows translation (top mic) and a new translation is in flight. */
+    isTranslating: Boolean,
     isListening: Boolean,
     language: SupportedLanguage,
     isSessionActive: Boolean,
+    /** Shown when Streaming STT failed for the bottom mic session. */
+    sttError: String? = null,
+    /** Shown when this panel displays translation and the Translate API failed. */
+    translationError: String? = null,
     isFaceToFace: Boolean,
     onFaceToFaceTap: () -> Unit,
     onSwapTap: () -> Unit,
@@ -412,7 +482,9 @@ private fun RecognitionPanel(
     onMicTap: () -> Unit,
     onTap: () -> Unit,
     /** Landscape: panel spans full window height — match left panel status-bar inset on body text. */
-    statusBarsInsetOnScrollContent: Boolean = false
+    statusBarsInsetOnScrollContent: Boolean = false,
+    /** Landscape: hide face-to-face (flip) control — two panels already face each user. */
+    showFaceToFaceButton: Boolean = true
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
@@ -433,18 +505,59 @@ private fun RecognitionPanel(
                 )
                 .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 130.dp)
         ) {
-            if (displayText.isBlank()) {
-                Text(
-                    text = if (isListening) UiCopy.PANEL_LISTENING else UiCopy.PANEL_MIC_HINT,
-                    style = panelContentTextStyle(
-                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (!sttError.isNullOrBlank()) {
+                    Text(
+                        text = sttError,
+                        style = panelContentTextStyle(MaterialTheme.colorScheme.error).copy(
+                            fontSize = 16.sp,
+                            lineHeight = 22.sp
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
                     )
-                )
-            } else {
-                Text(
-                    text = displayText,
-                    style = panelContentTextStyle(MaterialTheme.colorScheme.onBackground)
-                )
+                }
+                if (!translationError.isNullOrBlank()) {
+                    Text(
+                        text = translationError,
+                        style = panelContentTextStyle(MaterialTheme.colorScheme.error).copy(
+                            fontSize = 16.sp,
+                            lineHeight = 22.sp
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                    )
+                }
+                Box(
+                    modifier = Modifier.animateContentSize(
+                        animationSpec = tween(220, easing = FastOutSlowInEasing)
+                    )
+                ) {
+                    if (displayText.isBlank()) {
+                        val hint = when {
+                            isTranslating -> "…"
+                            isListening -> UiCopy.PANEL_LISTENING
+                            else -> UiCopy.PANEL_MIC_HINT
+                        }
+                        Text(
+                            text = hint,
+                            style = panelContentTextStyle(
+                                MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        val base = MaterialTheme.colorScheme.onBackground
+                        val bodyColor = if (isTranslating) base.copy(alpha = 0.72f) else base
+                        Text(
+                            text = displayText,
+                            style = panelContentTextStyle(bodyColor),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
             }
         }
 
@@ -462,14 +575,20 @@ private fun RecognitionPanel(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                CircleIconButton(Icons.Filled.Group, UiCopy.A11Y_FACE_TO_FACE,
-                    if (isFaceToFace) AccentBlue else MaterialTheme.colorScheme.secondary,
-                    if (isFaceToFace) AccentBlue.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant,
-                    onFaceToFaceTap)
+                if (showFaceToFaceButton) {
+                    CircleIconButton(Icons.Filled.Group, UiCopy.A11Y_FACE_TO_FACE,
+                        if (isFaceToFace) AccentBlue else MaterialTheme.colorScheme.secondary,
+                        if (isFaceToFace) AccentBlue.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant,
+                        onFaceToFaceTap)
+                }
                 CircleIconButton(Icons.Filled.SwapHoriz, UiCopy.A11Y_SWAP, MaterialTheme.colorScheme.secondary, MaterialTheme.colorScheme.surfaceVariant, onSwapTap)
                 Spacer(modifier = Modifier.weight(1f))
                 LanguageButton(language = language, textColor = MaterialTheme.colorScheme.onBackground, onClick = onLanguageTap)
-                MicButton(isListening = isSessionActive, bgColor = AccentBlue, onClick = onMicTap)
+                MicButton(
+                    isListening = isSessionActive && isListening,
+                    bgColor = AccentBlue,
+                    onClick = onMicTap
+                )
             }
         }
     }

@@ -1,5 +1,6 @@
 package com.coby.surasura.ui.home
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.coby.surasura.data.client.GoogleSpeechClient
@@ -10,13 +11,18 @@ import com.coby.surasura.data.prefs.LanguagePreferenceStore
 import com.coby.surasura.data.model.HomeState
 import com.coby.surasura.data.model.SupportedLanguage
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import io.grpc.StatusRuntimeException
 import javax.inject.Inject
 
 /**
@@ -56,8 +62,26 @@ class HomeViewModel @Inject constructor(
     private var ttsJob: Job? = null
 
     private companion object {
-        /** Coalesce rapid STT emissions so we translate the latest text once. */
-        private const val TRANSLATION_DEBOUNCE_MS = 90L
+        private const val TAG = "HomeViewModel"
+        /** Debounce when STT sends only interim — avoid reset storm from rapid chunks. */
+        private const val TRANSLATION_INTERIM_DEBOUNCE_MS = 450L
+        /** Shorter delay after a final segment so translated text appears without long silence. */
+        private const val TRANSLATION_AFTER_FINAL_DEBOUNCE_MS = 140L
+    }
+
+    private val speechUncaughtHandler = CoroutineExceptionHandler { _, t ->
+        Log.e(TAG, "Speech coroutine uncaught (check protobuf/grpc versions)", t)
+        translationDebounceJob?.cancel()
+        translationDebounceJob = null
+        _state.update {
+            it.copy(
+                isSessionActive = false,
+                speechRecognition = it.speechRecognition.copy(
+                    isListening = false,
+                    errorMessage = t.message ?: t.javaClass.simpleName
+                )
+            )
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -98,10 +122,20 @@ class HomeViewModel @Inject constructor(
     }
 
     fun stopSession() {
+        if (!_state.value.isSessionActive) return
+        val speakAfterTranslate = _state.value.isAutoSpeakEnabled
         speechJob?.cancel()
         speechJob = null
         translationDebounceJob?.cancel()
         translationDebounceJob = null
+
+        val pendingSource = _state.value.speechRecognition.recognizedText.trim()
+        val pendingTarget = _state.value.translation.targetLanguage
+
+        translationJob?.cancel()
+        translationJob = null
+        ttsJob?.cancel()
+        ttsJob = null
         ttsClient.stop()
         _state.update {
             it.copy(
@@ -110,54 +144,92 @@ class HomeViewModel @Inject constructor(
                 translation = it.translation.copy(isSpeaking = false)
             )
         }
+        if (pendingSource.isNotEmpty()) {
+            requestTranslation(pendingSource, pendingTarget, speakOnSuccess = speakAfterTranslate)
+        }
     }
 
     private fun startListening(sourceLanguage: SupportedLanguage, targetLanguage: SupportedLanguage) {
-        speechJob?.cancel()
-        _state.update {
-            it.copy(
-                speechRecognition = it.speechRecognition.copy(
-                    isListening = true,
-                    recognizedText = "",
-                    errorMessage = null
-                ),
-                translation = it.translation.copy(
-                    translatedText = "",
-                    errorMessage = null
+        val previousSpeech = speechJob
+        speechJob = viewModelScope.launch(Dispatchers.IO + speechUncaughtHandler) {
+            // Mic + gRPC setup must not run on Main (NetworkOnMainThreadException / AudioRecord strictness).
+            // Wait until the previous AudioRecord is fully released; overlapping instances crash on many devices.
+            previousSpeech?.cancelAndJoin()
+            translationDebounceJob?.cancel()
+            translationDebounceJob = null
+            val finalizedTranscript = StringBuilder()
+            var interimTranscript = ""
+            _state.update {
+                it.copy(
+                    speechRecognition = it.speechRecognition.copy(
+                        isListening = true,
+                        recognizedText = "",
+                        errorMessage = null
+                    ),
+                    translation = it.translation.copy(
+                        translatedText = "",
+                        errorMessage = null,
+                        isTranslating = false
+                    )
                 )
-            )
-        }
-
-        speechJob = viewModelScope.launch {
+            }
             try {
-                speechClient.startStreaming(sourceLanguage).collect { segment ->
+                speechClient.startStreaming(sourceLanguage).collect { batch ->
+                    val hasFinal = batch.any { it.isFinal }
+                    for (segment in batch.filter { it.isFinal }) {
+                        appendFinalTranscript(finalizedTranscript, segment.text)
+                        interimTranscript = ""
+                    }
+                    val interimCandidates = batch
+                        .filter { !it.isFinal }
+                        .map { it.text.trim() }
+                        .filter { it.isNotEmpty() }
+                    if (interimCandidates.isNotEmpty()) {
+                        val bestInBatch = interimCandidates.maxBy { it.length }
+                        interimTranscript = mergeInterimHypothesis(interimTranscript, bestInBatch)
+                    }
+                    val display = buildDisplayTranscript(finalizedTranscript, interimTranscript)
                     _state.update { state ->
-                        val prev = state.speechRecognition.recognizedText.trim()
-                        val next = segment.trim()
-                        val merged = when {
-                            next.isEmpty() -> prev
-                            prev.isEmpty() -> next
-                            prev.endsWith(next) -> prev
-                            else -> "$prev $next"
-                        }
                         state.copy(
                             speechRecognition = state.speechRecognition.copy(
-                                recognizedText = merged
+                                recognizedText = display
                             )
                         )
                     }
-                    scheduleDebouncedTranslation(
-                        _state.value.speechRecognition.recognizedText,
-                        targetLanguage
-                    )
+                    scheduleTranslationAfterStt(targetLanguage, quickAfterFinal = hasFinal)
                 }
-            } catch (e: Exception) {
+            } catch (e: CancellationException) {
+                translationDebounceJob?.cancel()
+                translationDebounceJob = null
+                throw e
+            } catch (e: LinkageError) {
+                translationDebounceJob?.cancel()
+                translationDebounceJob = null
+                Log.e(TAG, "Speech LinkageError (often protobuf mismatch)", e)
                 _state.update {
                     it.copy(
                         isSessionActive = false,
                         speechRecognition = it.speechRecognition.copy(
                             isListening = false,
-                            errorMessage = e.localizedMessage
+                            errorMessage = e.message ?: "Native/library mismatch"
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                translationDebounceJob?.cancel()
+                translationDebounceJob = null
+                Log.e(TAG, "Speech failed", e)
+                val errText = when (e) {
+                    is StatusRuntimeException ->
+                        "${e.status.code}: ${e.status.description ?: e.message ?: e.status.code.name}"
+                    else -> e.localizedMessage ?: e.message ?: e.toString()
+                }
+                _state.update {
+                    it.copy(
+                        isSessionActive = false,
+                        speechRecognition = it.speechRecognition.copy(
+                            isListening = false,
+                            errorMessage = errText
                         )
                     )
                 }
@@ -248,16 +320,64 @@ class HomeViewModel @Inject constructor(
     // 번역
     // ──────────────────────────────────────────────────────────────────────────
 
-    private fun scheduleDebouncedTranslation(text: String, targetLanguage: SupportedLanguage) {
-        if (text.isBlank()) return
+    /**
+     * Run translate after STT quiets down. Uses a short delay when the batch includes a final segment
+     * so the opposite panel updates soon after a completed phrase; interim-only batches use a longer debounce.
+     */
+    private fun scheduleTranslationAfterStt(
+        targetLanguage: SupportedLanguage,
+        quickAfterFinal: Boolean
+    ) {
         translationDebounceJob?.cancel()
+        val delayMs = if (quickAfterFinal) {
+            TRANSLATION_AFTER_FINAL_DEBOUNCE_MS
+        } else {
+            TRANSLATION_INTERIM_DEBOUNCE_MS
+        }
         translationDebounceJob = viewModelScope.launch {
-            delay(TRANSLATION_DEBOUNCE_MS)
-            requestTranslation(text, targetLanguage)
+            delay(delayMs)
+            val text = _state.value.speechRecognition.recognizedText.trim()
+            if (text.isNotEmpty()) {
+                requestTranslation(text, targetLanguage)
+            }
         }
     }
 
-    private fun requestTranslation(text: String, targetLanguage: SupportedLanguage) {
+    private fun appendFinalTranscript(finalized: StringBuilder, raw: String) {
+        val t = raw.trim()
+        if (t.isEmpty()) return
+        if (finalized.isNotEmpty()) finalized.append(' ')
+        finalized.append(t)
+    }
+
+    /**
+     * Streaming STT often sends a shorter interim after a longer one; keep the longer visible text.
+     * Same batch uses the longest candidate ([interimCandidates.maxBy]).
+     */
+    private fun mergeInterimHypothesis(previous: String, incoming: String): String {
+        val p = previous.trim()
+        val i = incoming.trim()
+        if (i.isEmpty()) return p
+        if (p.isEmpty()) return i
+        if (i.length < p.length && p.startsWith(i)) return p
+        return i
+    }
+
+    private fun buildDisplayTranscript(finalized: StringBuilder, interim: String): String {
+        val f = finalized.toString().trim()
+        val i = interim.trim()
+        return when {
+            i.isEmpty() -> f
+            f.isEmpty() -> i
+            else -> "$f $i"
+        }
+    }
+
+    private fun requestTranslation(
+        text: String,
+        targetLanguage: SupportedLanguage,
+        speakOnSuccess: Boolean = false
+    ) {
         if (text.isBlank()) return
 
         translationJob?.cancel()
@@ -271,19 +391,31 @@ class HomeViewModel @Inject constructor(
                     it.copy(
                         translation = it.translation.copy(
                             translatedText = translated,
-                            isTranslating = false
+                            isTranslating = false,
+                            errorMessage = null
                         )
                     )
                 }
-                if (_state.value.isAutoSpeakEnabled) {
+                if (speakOnSuccess) {
                     requestSpeak(translated, targetLanguage)
                 }
+            } catch (e: CancellationException) {
+                _state.update {
+                    it.copy(translation = it.translation.copy(isTranslating = false))
+                }
+                throw e
             } catch (e: Exception) {
+                val err = when (e) {
+                    is StatusRuntimeException ->
+                        "${e.status.code}: ${e.status.description ?: e.message ?: e.status.code.name}"
+                    else -> e.localizedMessage ?: e.message ?: e.toString()
+                }
+                Log.e(TAG, "Translation failed", e)
                 _state.update {
                     it.copy(
                         translation = it.translation.copy(
                             isTranslating = false,
-                            errorMessage = e.localizedMessage
+                            errorMessage = err
                         )
                     )
                 }
