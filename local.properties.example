@@ -1,0 +1,9 @@
+# local.properties.example
+# 이 파일을 local.properties로 복사하고 실제 API 키를 입력하세요.
+# Copy this file to local.properties and fill in your actual API key.
+
+# Google Cloud API Key (Speech-to-Text, Translation, Text-to-Speech)
+GOOGLE_CLOUD_API_KEY=your_google_cloud_api_key_here
+
+# Android SDK 경로 (자동으로 설정됩니다)
+# sdk.dir=/path/to/android/sdk
