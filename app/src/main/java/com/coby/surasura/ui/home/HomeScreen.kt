@@ -3,6 +3,10 @@ package com.coby.surasura.ui.home
 import android.Manifest
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.graphics.Color as AndroidColor
+import android.graphics.drawable.ColorDrawable
+import android.os.Build
+import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
@@ -36,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -47,6 +52,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -55,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.content.ContextCompat
 import com.coby.surasura.data.model.ActiveMic
 import com.coby.surasura.data.model.SupportedLanguage
@@ -73,6 +80,44 @@ private fun panelContentTextStyle(color: Color): TextStyle = TextStyle(
     letterSpacing = 0.sp,
     platformStyle = PlatformTextStyle(includeFontPadding = false)
 )
+
+/**
+ * Compose [Dialog] with [DialogProperties.usePlatformDefaultWidth] still uses wrap-content on some
+ * devices in landscape; pin the window to [MATCH_PARENT] so expanded text truly fills the display.
+ */
+@Composable
+private fun FullscreenExpandedDialog(
+    onDismissRequest: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismissRequest,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+            dismissOnClickOutside = false
+        )
+    ) {
+        val view = LocalView.current
+        SideEffect {
+            val window = (view.parent as? DialogWindowProvider)?.window ?: return@SideEffect
+            window.setLayout(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT
+            )
+            window.setBackgroundDrawable(ColorDrawable(AndroidColor.TRANSPARENT))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                window.attributes = window.attributes.apply {
+                    layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+        }
+        Box(modifier = Modifier.fillMaxSize()) {
+            content()
+        }
+    }
+}
 
 /**
  * 홈 화면 — iOS HomeView.swift와 동일한 역할
@@ -276,51 +321,35 @@ fun HomeScreen(viewModel: HomeViewModel) {
 
         // ── 전체화면 확장 (상단) ─────────────────────────────────────────
         if (state.isTopExpanded) {
-            Dialog(
-                onDismissRequest = { viewModel.collapseTopPanel() },
-                properties = DialogProperties(
-                    usePlatformDefaultWidth = false,
-                    decorFitsSystemWindows = false
+            FullscreenExpandedDialog(onDismissRequest = { viewModel.collapseTopPanel() }) {
+                val topLang = state.topLanguage
+                ExpandedTextView(
+                    text = topDisplayText,
+                    backgroundColor = AccentBlue,
+                    textColor = Color.White,
+                    isFaceToFace = state.isFaceToFaceMode,
+                    isSpeaking = state.translation.isSpeaking,
+                    onSpeak = { viewModel.speakExpanded(topDisplayText, topLang) },
+                    onStopSpeak = { viewModel.stopSpeaking() },
+                    onDismiss = { viewModel.collapseTopPanel() }
                 )
-            ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    val topLang = state.topLanguage
-                    ExpandedTextView(
-                        text = topDisplayText,
-                        backgroundColor = AccentBlue,
-                        textColor = Color.White,
-                        isFaceToFace = state.isFaceToFaceMode,
-                        isSpeaking = state.translation.isSpeaking,
-                        onSpeak = { viewModel.speakExpanded(topDisplayText, topLang) },
-                        onStopSpeak = { viewModel.stopSpeaking() },
-                        onDismiss = { viewModel.collapseTopPanel() }
-                    )
-                }
             }
         }
 
         // ── 전체화면 확장 (하단) ─────────────────────────────────────────
         if (state.isBottomExpanded) {
-            Dialog(
-                onDismissRequest = { viewModel.collapseBottomPanel() },
-                properties = DialogProperties(
-                    usePlatformDefaultWidth = false,
-                    decorFitsSystemWindows = false
+            FullscreenExpandedDialog(onDismissRequest = { viewModel.collapseBottomPanel() }) {
+                val bottomLang = state.bottomLanguage
+                ExpandedTextView(
+                    text = bottomDisplayText,
+                    backgroundColor = MaterialTheme.colorScheme.background,
+                    textColor = MaterialTheme.colorScheme.onBackground,
+                    isFaceToFace = false,
+                    isSpeaking = state.translation.isSpeaking,
+                    onSpeak = { viewModel.speakExpanded(bottomDisplayText, bottomLang) },
+                    onStopSpeak = { viewModel.stopSpeaking() },
+                    onDismiss = { viewModel.collapseBottomPanel() }
                 )
-            ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    val bottomLang = state.bottomLanguage
-                    ExpandedTextView(
-                        text = bottomDisplayText,
-                        backgroundColor = MaterialTheme.colorScheme.background,
-                        textColor = MaterialTheme.colorScheme.onBackground,
-                        isFaceToFace = false,
-                        isSpeaking = state.translation.isSpeaking,
-                        onSpeak = { viewModel.speakExpanded(bottomDisplayText, bottomLang) },
-                        onStopSpeak = { viewModel.stopSpeaking() },
-                        onDismiss = { viewModel.collapseBottomPanel() }
-                    )
-                }
             }
         }
     }

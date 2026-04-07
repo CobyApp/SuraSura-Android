@@ -3,6 +3,7 @@ package com.coby.surasura.data.client
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.SystemClock
 import android.util.Log
 import com.coby.surasura.BuildConfig
 import com.coby.surasura.data.model.SttStreamSegment
@@ -44,6 +45,13 @@ class GoogleSpeechClient @Inject constructor() {
         private const val SAMPLE_RATE = 16000
         private const val HOST = "speech.googleapis.com"
         private const val PORT = 443
+        /**
+         * After we detect actual speech, if the mic stays below [SILENCE_AMPLITUDE_THRESHOLD]
+         * for this long, [onSilenceTimeout] runs once (ViewModel should call [stopSession]).
+         */
+        private const val SILENCE_TIMEOUT_MS = 3_000L
+        /** 16-bit PCM peak (abs sample): above = treated as speech / noise floor override. */
+        private const val SILENCE_AMPLITUDE_THRESHOLD = 900
     }
 
     /** Try VOICE_RECOGNITION first, then MIC — some devices fail the former. */
@@ -66,7 +74,10 @@ class GoogleSpeechClient @Inject constructor() {
         return null
     }
 
-    fun startStreaming(language: SupportedLanguage): Flow<List<SttStreamSegment>> = callbackFlow {
+    fun startStreaming(
+        language: SupportedLanguage,
+        onSilenceTimeout: (() -> Unit)? = null
+    ): Flow<List<SttStreamSegment>> = callbackFlow {
         if (BuildConfig.GOOGLE_CLOUD_API_KEY.isBlank()) {
             close(IllegalStateException("GOOGLE_CLOUD_API_KEY is not configured"))
             return@callbackFlow
@@ -186,11 +197,42 @@ class GoogleSpeechClient @Inject constructor() {
         }
         Log.d(TAG, "gRPC streaming started (language=${language.googleSpeechCode})")
 
+        val silenceNotified = AtomicBoolean(false)
+        var heardVoice = false
+        var lastLoudElapsedMs = 0L
+
         val readJob = launch(Dispatchers.IO) {
             while (isActive && !closed.get()) {
                 val read = audioRecord.read(readBuffer, 0, readBuffer.size)
                 when {
                     read > 0 -> {
+                        var peak = 0
+                        for (i in 0 until read) {
+                            val a = kotlin.math.abs(readBuffer[i].toInt())
+                            if (a > peak) peak = a
+                        }
+                        val now = SystemClock.elapsedRealtime()
+                        if (peak >= SILENCE_AMPLITUDE_THRESHOLD) {
+                            heardVoice = true
+                            lastLoudElapsedMs = now
+                        } else if (
+                            onSilenceTimeout != null &&
+                            heardVoice &&
+                            lastLoudElapsedMs > 0L &&
+                            !silenceNotified.get() &&
+                            (now - lastLoudElapsedMs) >= SILENCE_TIMEOUT_MS
+                        ) {
+                            if (silenceNotified.compareAndSet(false, true)) {
+                                Log.d(TAG, "Silence ${SILENCE_TIMEOUT_MS}ms after speech; auto-stop session")
+                                try {
+                                    onSilenceTimeout.invoke()
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "onSilenceTimeout failed", e)
+                                }
+                            }
+                            break
+                        }
+
                         val byteBuffer = ByteBuffer.allocate(read * 2).order(ByteOrder.LITTLE_ENDIAN)
                         for (i in 0 until read) {
                             byteBuffer.putShort(readBuffer[i])

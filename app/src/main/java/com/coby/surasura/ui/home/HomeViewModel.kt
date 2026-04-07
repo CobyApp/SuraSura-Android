@@ -174,10 +174,31 @@ class HomeViewModel @Inject constructor(
                 )
             }
             try {
-                speechClient.startStreaming(sourceLanguage).collect { batch ->
+                speechClient.startStreaming(
+                    sourceLanguage,
+                    onSilenceTimeout = {
+                        viewModelScope.launch {
+                            if (_state.value.isSessionActive) stopSession()
+                        }
+                    }
+                ).collect { batch ->
                     val hasFinal = batch.any { it.isFinal }
-                    for (segment in batch.filter { it.isFinal }) {
-                        appendFinalTranscript(finalizedTranscript, segment.text)
+                    // Several finals in one response: keep distinct lines, drop shorter prefixes of a longer
+                    // final in the same batch (API often sends "hello" then "hello world").
+                    val finalsInBatch = batch
+                        .filter { it.isFinal }
+                        .map { it.text.trim() }
+                        .filter { it.isNotEmpty() }
+                        .distinct()
+                    if (finalsInBatch.isNotEmpty()) {
+                        val nonPrefix = finalsInBatch.filter { t ->
+                            finalsInBatch.none { other ->
+                                other != t && other.startsWith(t) && other.length > t.length
+                            }
+                        }
+                        for (t in nonPrefix) {
+                            appendFinalTranscript(finalizedTranscript, t)
+                        }
                         interimTranscript = ""
                     }
                     val interimCandidates = batch
@@ -351,15 +372,16 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
-     * Streaming STT often sends a shorter interim after a longer one; keep the longer visible text.
-     * Same batch uses the longest candidate ([interimCandidates.maxBy]).
+     * Merge streaming interims: prefer longer hypothesis; if the API rescored to a shorter prefix of the
+     * same line, keep the longer text. Does not push interim into finalized (avoids duplicate with finals).
      */
     private fun mergeInterimHypothesis(previous: String, incoming: String): String {
         val p = previous.trim()
         val i = incoming.trim()
         if (i.isEmpty()) return p
         if (p.isEmpty()) return i
-        if (i.length < p.length && p.startsWith(i)) return p
+        if (i.startsWith(p)) return i
+        if (p.startsWith(i)) return p
         return i
     }
 
