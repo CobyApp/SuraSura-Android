@@ -130,15 +130,26 @@ class HomeViewModel @Inject constructor(
 
         speechJob = viewModelScope.launch {
             try {
-                speechClient.startStreaming(sourceLanguage).collect { recognizedText ->
-                    _state.update {
-                        it.copy(
-                            speechRecognition = it.speechRecognition.copy(
-                                recognizedText = recognizedText
+                speechClient.startStreaming(sourceLanguage).collect { segment ->
+                    _state.update { state ->
+                        val prev = state.speechRecognition.recognizedText.trim()
+                        val next = segment.trim()
+                        val merged = when {
+                            next.isEmpty() -> prev
+                            prev.isEmpty() -> next
+                            prev.endsWith(next) -> prev
+                            else -> "$prev $next"
+                        }
+                        state.copy(
+                            speechRecognition = state.speechRecognition.copy(
+                                recognizedText = merged
                             )
                         )
                     }
-                    scheduleDebouncedTranslation(recognizedText, targetLanguage)
+                    scheduleDebouncedTranslation(
+                        _state.value.speechRecognition.recognizedText,
+                        targetLanguage
+                    )
                 }
             } catch (e: Exception) {
                 _state.update {
